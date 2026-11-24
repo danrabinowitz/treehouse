@@ -94,6 +94,41 @@ func TestRun_RunsInGivenDir(t *testing.T) {
 	}
 }
 
+func TestRunWithEnv_OverridesInheritedAndAddsNew(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "env.txt")
+	t.Setenv("TREEHOUSE_TEST_INHERITED", "parent")
+
+	var script string
+	if runtime.GOOS == "windows" {
+		script = `echo %TREEHOUSE_TEST_INHERITED%> ` + quotePath(sentinel) +
+			` & echo %TREEHOUSE_TEST_NEW%>> ` + quotePath(sentinel)
+	} else {
+		script = `printf '%s\n' "$TREEHOUSE_TEST_INHERITED" > ` + quotePath(sentinel) +
+			` && printf '%s\n' "$TREEHOUSE_TEST_NEW" >> ` + quotePath(sentinel)
+	}
+
+	var stdout, stderr bytes.Buffer
+	RunWithEnv([]string{script}, dir, &stdout, &stderr, []string{
+		"TREEHOUSE_TEST_INHERITED=profile",
+		"TREEHOUSE_TEST_NEW=new",
+	})
+
+	contents, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("reading sentinel: %v\nstderr: %s", err, stderr.String())
+	}
+	got := strings.ReplaceAll(strings.TrimSpace(string(contents)), "\r\n", "\n")
+	var lines []string
+	for _, line := range strings.Split(got, "\n") {
+		lines = append(lines, strings.TrimSpace(line))
+	}
+	want := []string{"profile", "new"}
+	if len(lines) != len(want) || lines[0] != want[0] || lines[1] != want[1] {
+		t.Fatalf("env lines = %v, want %v", lines, want)
+	}
+}
+
 func TestWindowsShellCommandLineWrapsQuotedHookCommandForCmd(t *testing.T) {
 	shell := `C:\Windows\System32\cmd.exe`
 	command := `echo hi > "C:\Temp\ran.txt"`

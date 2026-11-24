@@ -6,7 +6,10 @@ package hooks
 import (
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+
+	envpkg "github.com/kunchenguid/treehouse/v3/internal/env"
 )
 
 // Run executes each command in commands sequentially in workDir. Each command
@@ -14,16 +17,25 @@ import (
 // Stdout and stderr from the commands are streamed to the given writers.
 // Failures are logged to stderr and do not stop subsequent commands.
 func Run(commands []string, workDir string, stdout, stderr io.Writer) {
+	RunWithEnv(commands, workDir, stdout, stderr, nil)
+}
+
+// RunWithEnv is Run with extra environment variables merged over the inherited
+// environment. A nil or empty extraEnv keeps the exact inherited environment.
+func RunWithEnv(commands []string, workDir string, stdout, stderr io.Writer, extraEnv []string) {
 	for _, command := range commands {
-		runOne(command, workDir, stdout, stderr)
+		runOne(command, workDir, stdout, stderr, extraEnv)
 	}
 }
 
-func runOne(command, workDir string, stdout, stderr io.Writer) {
+func runOne(command, workDir string, stdout, stderr io.Writer, extraEnv []string) {
 	cmd := newHookCommand(command)
 	cmd.Dir = workDir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if len(extraEnv) > 0 {
+		cmd.Env = envpkg.Merge(os.Environ(), extraEnv)
+	}
 
 	if err := cmd.Run(); err != nil {
 		exitCode := -1
