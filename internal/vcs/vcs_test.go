@@ -521,3 +521,37 @@ func TestDestructiveWrappersRefuseMarkerlessPath(t *testing.T) {
 		t.Fatalf("enclosing repository HEAD moved off main to %q", ref)
 	}
 }
+
+func TestReadSparseCheckout_MarkerlessPathDoesNotReadEnclosingRepo(t *testing.T) {
+	isolateUserConfig(t)
+	repo := t.TempDir()
+	mustRun(t, repo, "git", "init")
+	sub := filepath.Join(repo, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := ReadSparseCheckout(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Enabled || info.Cone || info.SparseIndex || len(info.Dirs) != 0 {
+		t.Fatalf("markerless path reported sparse state: %+v", info)
+	}
+
+	if _, _, err := ApplySparseCheckout(sub, []string{"a"}, false); err == nil ||
+		!strings.Contains(err.Error(), "no .git or .jj marker") {
+		t.Fatalf("expected markerless refusal, got %v", err)
+	}
+}
+
+func TestJJBackendHasNoSparseSupport(t *testing.T) {
+	enabled, cone, sparseIndex, dirs, err := jjBackend.ReadSparseCheckout("ignored")
+	if err != nil || enabled || cone || sparseIndex || len(dirs) != 0 {
+		t.Fatalf("jj read = %v %v %v %v %v", enabled, cone, sparseIndex, dirs, err)
+	}
+	if _, _, err := jjBackend.ApplySparseCheckout("ignored", []string{"a"}, false); err == nil ||
+		!strings.Contains(err.Error(), "only supported by the git backend") {
+		t.Fatalf("jj apply error = %v", err)
+	}
+}
