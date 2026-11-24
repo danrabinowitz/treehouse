@@ -23,6 +23,13 @@ type statusJSONProcess struct {
 	Name string `json:"name"`
 }
 
+type statusJSONSparse struct {
+	Enabled bool   `json:"enabled"`
+	Cone    bool   `json:"cone"`
+	Dirs    int    `json:"dirs"`
+	Error   string `json:"error,omitempty"`
+}
+
 type statusJSONWorktree struct {
 	Name           string              `json:"name"`
 	Path           string              `json:"path"`
@@ -38,6 +45,7 @@ type statusJSONWorktree struct {
 	LeaseHolder    string              `json:"lease_holder"`
 	LeasedAt       *time.Time          `json:"leased_at"`
 	Processes      []statusJSONProcess `json:"processes"`
+	Sparse         *statusJSONSparse   `json:"sparse,omitempty"`
 }
 
 var statusCmd = &cobra.Command{
@@ -138,6 +146,16 @@ var statusCmd = &cobra.Command{
 			if wt.Status != pool.StatusDamaged && wt.Flavor != "" && wt.Flavor != repoFlavor {
 				line += yellow(fmt.Sprintf("  (%s-flavored; repo selects %s — destroy to migrate)", wt.Flavor, repoFlavor))
 			}
+			if wt.Status != pool.StatusDamaged && wt.Flavor == "git" {
+				switch {
+				case wt.SparseErr != "":
+					line += yellow(fmt.Sprintf("  (sparse unreadable: %s)", wt.SparseErr))
+				case wt.SparseEnabled && wt.SparseCone:
+					line += fmt.Sprintf("  (sparse: cone, %d dirs)", wt.SparseDirs)
+				case wt.SparseEnabled:
+					line += fmt.Sprintf("  (sparse: non-cone, %d patterns)", wt.SparseDirs)
+				}
+			}
 			if wt.Status == pool.StatusDamaged {
 				line += yellow("  (" + pool.DamagedWorktreeAdvice + ")")
 			}
@@ -200,6 +218,14 @@ func writeStatusJSON(worktrees []pool.WorktreeStatus) error {
 		if !wt.LeasedAt.IsZero() {
 			leasedAt := wt.LeasedAt
 			item.LeasedAt = &leasedAt
+		}
+		if wt.Flavor == "git" {
+			item.Sparse = &statusJSONSparse{
+				Enabled: wt.SparseEnabled,
+				Cone:    wt.SparseCone,
+				Dirs:    wt.SparseDirs,
+				Error:   wt.SparseErr,
+			}
 		}
 		for _, process := range wt.Processes {
 			item.Processes = append(item.Processes, statusJSONProcess{

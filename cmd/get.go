@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/kunchenguid/treehouse/v3/internal/config"
+	envpkg "github.com/kunchenguid/treehouse/v3/internal/env"
 	"github.com/kunchenguid/treehouse/v3/internal/pool"
 	"github.com/kunchenguid/treehouse/v3/internal/process"
 	"github.com/kunchenguid/treehouse/v3/internal/shell"
@@ -30,6 +32,7 @@ var (
 	getUniqueLeaf   bool
 	getWorktreePath string
 	getAPFSSharing  string
+	getProfile      string
 )
 
 // Process seams, overridable in tests, matching the pattern in internal/pool.
@@ -102,6 +105,7 @@ func init() {
 	getCmd.Flags().BoolVar(&getUniqueLeaf, "unique-leaf", false, "Name a newly created worktree directory <repo>-<slot> instead of <repo>, overriding unique_leaf in config")
 	getCmd.Flags().StringVar(&getWorktreePath, "worktree-path", "", "Template for a newly created worktree's directory, overriding worktree_path in config (default: {pool}/{slot}/{repo})")
 	getCmd.Flags().StringVar(&getAPFSSharing, "apfs-sharing", "", "Share tracked data in fresh Git slots on macOS/APFS: off (default) or fresh; overrides TREEHOUSE_APFS_SHARING and config")
+	getCmd.Flags().StringVar(&getProfile, "profile", "", "Apply the named sparse-checkout profile from treehouse.toml")
 	rootCmd.AddCommand(getCmd)
 }
 
@@ -111,6 +115,9 @@ func getRunE(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("branch") && getBranch == "" {
 		return fmt.Errorf("--branch requires a non-empty branch name")
+	}
+	if cmd.Flags().Changed("profile") && getProfile == "" {
+		return fmt.Errorf("--profile requires a non-empty profile name")
 	}
 	if getJSON && !getLease {
 		return fmt.Errorf("--json requires --lease")
@@ -140,6 +147,20 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
+	profile, err := config.ResolveProfile(repoRoot, cfg, getProfile)
+	if err != nil {
+		return err
+	}
+	if profile != nil && vcs.BackendNameFor(repoRoot) != "git" {
+		return fmt.Errorf("sparse-checkout profiles are only supported by the git backend")
+	}
+	if profile != nil && profile.EnvDeclared && !profile.Explicit {
+		fmt.Fprintf(os.Stderr, "🌳 Profile %q declares env; it is applied only when --profile names the profile. Sparse selection still applies.\n", profile.Name)
+	}
+	if profile != nil && len(profile.Env) > 0 {
+		fmt.Fprintf(os.Stderr, "🌳 Profile %q applies env to the claimed session: %s\n", profile.Name, profileEnvKeys(profile.Env))
+	}
+
 	apfsSharing, err := config.ResolveAPFSSharing(getAPFSSharing, cfg)
 	if err != nil {
 		return err
@@ -166,6 +187,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 		IncludeManifest: manifest,
 		UniqueLeaf:      resolveUniqueLeaf(cmd, cfg),
 		APFSSharing:     apfsSharing,
+		Sparse:          poolSparseSelection(profile),
+		Profile:         profileName(profile),
+		ProfileEnv:      profileEnv(profile),
+		PostClaim:       cfg.Hooks.PostClaim,
 	}
 
 	if getLease {
@@ -181,6 +206,10 @@ func getRunE(cmd *cobra.Command, args []string) error {
 
 	env := []string{
 		"TREEHOUSE_DIR=" + wtPath,
+	}
+	if profile != nil {
+		env = append(env, "TREEHOUSE_PROFILE="+profile.Name)
+		env = append(env, envpkg.Pairs(profile.Env)...)
 	}
 	_, err = shell.Spawn(wtPath, env)
 
@@ -252,6 +281,40 @@ func returnWorktreeToPool(poolDir, wtPath, baseBranch string, preconditions pool
 	return pool.ReleaseConditional(poolDir, wtPath, baseBranch, preconditions, func() error {
 		return killLingeringProcesses(wtPath)
 	})
+}
+
+// poolSparseSelection converts a resolved profile into the pool's selection
+// type, or nil to leave the slot's sparse state untouched.
+func poolSparseSelection(profile *config.ResolvedProfile) *pool.SparseSelection {
+	if profile == nil {
+		return nil
+	}
+	return &pool.SparseSelection{Full: profile.Full, Dirs: profile.Dirs}
+}
+
+func profileName(profile *config.ResolvedProfile) string {
+	if profile == nil {
+		return ""
+	}
+	return profile.Name
+}
+
+func profileEnv(profile *config.ResolvedProfile) map[string]string {
+	if profile == nil {
+		return nil
+	}
+	return profile.Env
+}
+
+// profileEnvKeys names the variables a profile will set, for an audible
+// notice. Values are deliberately not printed.
+func profileEnvKeys(env map[string]string) string {
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 // resolveRequestedBase returns the base this invocation asks for: the --base
