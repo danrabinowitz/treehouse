@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+
+	envpkg "github.com/kunchenguid/treehouse/v3/internal/env"
 )
 
 func Spawn(dir string, env []string) (int, error) {
@@ -23,7 +25,10 @@ func Spawn(dir string, env []string) (int, error) {
 
 	cmd := exec.Command(shellPath, shellArgs(runtime.GOOS, shellPath, hasUserShell)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = os.Environ()
+	if len(env) > 0 {
+		cmd.Env = envpkg.Merge(cmd.Env, env)
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

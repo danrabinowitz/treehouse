@@ -107,6 +107,13 @@ type Backend interface {
 	IsHeadMergedIntoRef(worktreePath, ref string) (bool, error)
 	// IsDirty reports tracked or untracked local changes.
 	IsDirty(worktreePath string) (bool, error)
+	// ReadSparseCheckout reports a worktree's sparse configuration. Backends
+	// without sparse support return all-zero values and nil.
+	ReadSparseCheckout(worktreePath string) (enabled, cone, sparseIndex bool, dirs []string, err error)
+	// ApplySparseCheckout enforces a full checkout (full=true) or a cone-mode
+	// directory selection. It returns the directories observed before the call
+	// (nil when the worktree was not sparse) and whether anything changed.
+	ApplySparseCheckout(worktreePath string, dirs []string, full bool) (before []string, changed bool, err error)
 }
 
 var (
@@ -671,6 +678,40 @@ func IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 // IsDirty reports tracked or untracked local changes in the worktree.
 func IsDirty(worktreePath string) (bool, error) {
 	return backendForWorktree(worktreePath).IsDirty(worktreePath)
+}
+
+// SparseCheckoutInfo is a worktree's live sparse configuration.
+type SparseCheckoutInfo struct {
+	Enabled     bool
+	Cone        bool
+	SparseIndex bool
+	Dirs        []string
+}
+
+// ReadSparseCheckout reports the sparse configuration of the worktree's own
+// backend. A markerless path returns the zero value rather than reading the
+// repository enclosing an in-project pool.
+func ReadSparseCheckout(worktreePath string) (SparseCheckoutInfo, error) {
+	backend := slotMarkerBackend(worktreePath)
+	if backend == nil {
+		return SparseCheckoutInfo{}, nil
+	}
+	enabled, cone, sparseIndex, dirs, err := backend.ReadSparseCheckout(worktreePath)
+	if err != nil {
+		return SparseCheckoutInfo{}, err
+	}
+	return SparseCheckoutInfo{Enabled: enabled, Cone: cone, SparseIndex: sparseIndex, Dirs: dirs}, nil
+}
+
+// ApplySparseCheckout enforces a sparse selection on the worktree. It refuses
+// a markerless path for the same reason destructive resets do: the configured
+// backend may resolve the repository enclosing the pool.
+func ApplySparseCheckout(worktreePath string, dirs []string, full bool) ([]string, bool, error) {
+	backend, err := destructiveBackendForWorktree(worktreePath)
+	if err != nil {
+		return nil, false, err
+	}
+	return backend.ApplySparseCheckout(worktreePath, dirs, full)
 }
 
 // UncommittedWork describes the local changes a reset of a Git slot would

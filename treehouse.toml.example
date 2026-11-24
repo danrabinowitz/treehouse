@@ -71,8 +71,33 @@ max_trees = 16
 # opt-in from the main repository root.
 # vcs = "jj"
 
+# Sparse-checkout profiles. Declarative data only: selected directories and
+# environment variables, never commands. See README: Sparse-checkout profiles.
+# `default` names the profile `get` applies when --profile is absent; with no
+# default, a plain get leaves the slot's sparse state untouched.
+# default = "cone"
+#
+# [profiles.cone]
+# `sparse` is true, false, or an array of repo-relative directories. Inline
+# directories and sparse_file lines are unioned and reduced to Git's minimal
+# cone set (a parent covers its descendants). sparse = false is a full
+# checkout. sparse_mode, when set, must be "cone".
+# sparse = ["teams/insights/v2"]
+# sparse_file = ".treehouse/cone.txt"   # one repo-relative directory per line
+# sparse_mode = "cone"
+# `env` is applied only when --profile names the profile, never when a repo
+# default selects it. It reaches the interactive subshell and post_claim, not
+# Treehouse's own Git commands.
+# env = { GOFLAGS = "-mod=readonly" }
+#
+# [profiles.full]
+# sparse = false
+# env = { GOFLAGS = "-mod=vendor" }
+#
+# Profiles require Git 2.36+ and the git backend; jj refuses them.
+
 # Lifecycle hooks do NOT belong in this file. A [hooks] section here is
 # ignored for safety, so that running treehouse in an untrusted clone cannot
 # execute checked-in shell. Treehouse warns on stderr when it ignores hook keys.
-# Put post_create and pre_destroy in ~/.config/treehouse/config.toml instead;
-# see the Hooks section of the README for the syntax.
+# Put post_create, post_claim, and pre_destroy in
+# ~/.config/treehouse/config.toml instead; see the Hooks section of the README.

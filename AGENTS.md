@@ -26,6 +26,7 @@ User-facing behavior: [README.md](README.md). Settings and precedence: [treehous
 - A command that leaves the world unchanged must not exit 0 (see `cmd/exit.go` and docs/design.md for the two exceptions).
 - `WriteState` stays atomic; a corrupt state file recovers every entry as leased and quarantined.
 - Lifecycle hooks are read from user-level config only; repo-level hooks are ignored for safety.
+- Sparse-checkout profiles are repo-level declarative data applied at claim time before seeding, never persisted in state; jj refuses them. Profile env reaches only the subshell and user-level `post_claim`, and only when `--profile` names the profile.
 
 ## Windows compatibility
 

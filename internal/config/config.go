@@ -50,11 +50,24 @@ type Config struct {
 	// TREEHOUSE_UNIQUE_LEAF environment variable.
 	UniqueLeaf bool  `toml:"unique_leaf,omitempty"`
 	Hooks      Hooks `toml:"hooks,omitempty"`
+	// DefaultProfile names the profile `get` applies when --profile is absent.
+	// Empty (the default) applies no profile. Profiles are declarative data
+	// only: selected directories and environment variables, never commands.
+	// A repo-level treehouse.toml is authoritative when present; a user-level
+	// default applies only when the repository has no config file, matching
+	// every other repo-safe setting.
+	DefaultProfile string             `toml:"default,omitempty"`
+	Profiles       map[string]Profile `toml:"profiles,omitempty"`
 }
 
 type Hooks struct {
 	PostCreate []string `toml:"post_create,omitempty"`
 	PreDestroy []string `toml:"pre_destroy,omitempty"`
+	// PostClaim runs after every acquisition, after post_create. It receives
+	// TREEHOUSE_PROFILE, TREEHOUSE_SLOT, TREEHOUSE_LEASE_ID, and
+	// TREEHOUSE_REPO plus the selected profile's env (only when --profile
+	// named the profile). User-level config only, like every hook.
+	PostClaim []string `toml:"post_claim,omitempty"`
 }
 
 // RootEnvVar is the environment variable that overrides the configured
@@ -168,6 +181,7 @@ func Load(repoRoot string) (Config, error) {
 		// untrusted clone cannot execute checked-in shell. Say so, once,
 		// instead of dropping them silently.
 		warnRepoHooks(os.Stderr, repoPath, md)
+		warnUnknownProfileKeys(os.Stderr, repoPath, md)
 		cfg.Hooks = Hooks{}
 	}
 
@@ -208,9 +222,11 @@ func loadUser() (Config, bool, error) {
 		return cfg, false, nil
 	}
 	if _, err := os.Stat(userPath); err == nil {
-		if _, err := toml.DecodeFile(userPath, &cfg); err != nil {
+		md, err := toml.DecodeFile(userPath, &cfg)
+		if err != nil {
 			return cfg, false, err
 		}
+		warnUnknownProfileKeys(os.Stderr, userPath, md)
 		return cfg, true, nil
 	}
 

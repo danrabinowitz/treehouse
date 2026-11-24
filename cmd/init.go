@@ -58,6 +58,10 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("failed to write config: %w", err)
 		}
 
+		if _, err := f.WriteString("\n# Sparse-checkout profiles (declarative data, never commands; Git 2.36+).\n# default names the profile get applies when --profile is absent.\n# [profiles.cone]\n# sparse = [\"path/to/only-needed/dir\"]   # or sparse = false for full\n# sparse_file = \".treehouse/cone.txt\"     # one repo-relative dir per line\n# env = { GOFLAGS = \"-mod=readonly\" }     # applied only with explicit --profile\n# See README: Sparse-checkout profiles.\n"); err != nil {
+			return fmt.Errorf("failed to write config: %w", err)
+		}
+
 		fmt.Fprintf(os.Stderr, "Created %s\n", dest)
 		return nil
 	},

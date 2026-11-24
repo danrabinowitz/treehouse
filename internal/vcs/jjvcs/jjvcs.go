@@ -570,6 +570,18 @@ func (*Backend) IsDirty(worktreePath string) (bool, error) {
 	return out != "clean", nil
 }
 
+// ReadSparseCheckout reports no sparse state: jj has no sparse-checkout
+// concept. A jj slot is always a full working copy.
+func (*Backend) ReadSparseCheckout(string) (bool, bool, bool, []string, error) {
+	return false, false, false, nil, nil
+}
+
+// ApplySparseCheckout refuses rather than silently ignoring a profile: a
+// caller that asked for a sparse checkout must not receive a full one.
+func (*Backend) ApplySparseCheckout(string, []string, bool) ([]string, bool, error) {
+	return nil, false, fmt.Errorf("sparse-checkout profiles are only supported by the git backend")
+}
+
 // branchRef returns the revset to base new or reset worktrees on: whichever
 // of the local bookmark or its origin counterpart is further ahead, matching
 // the git backend's freshest-wins behavior. On divergence origin wins.

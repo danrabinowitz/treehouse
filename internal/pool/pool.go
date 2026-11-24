@@ -86,6 +86,16 @@ type WorktreeStatus struct {
 	// alone cannot answer that, because StatusHere hides whichever
 	// classification the slot would otherwise have carried.
 	HeldOnlyByCwd bool
+	// SparseEnabled reports that this git slot has a sparse checkout.
+	SparseEnabled bool
+	// SparseCone reports that the sparse checkout uses cone mode.
+	SparseCone bool
+	// SparseDirs is the number of cone directories (or patterns) the slot
+	// currently selects.
+	SparseDirs int
+	// SparseErr reports that reading the slot's sparse state failed. It is a
+	// per-slot diagnostic and never fails List.
+	SparseErr string
 }
 
 // LeaseInfo is the stable machine-readable identity of one lease acquisition.
@@ -103,6 +113,17 @@ type LeaseInfo struct {
 	// needs no branch and must never refuse to protect a home over a
 	// reporting field.
 	BaseBranch string `json:"base_branch"`
+	// Name is the pool slot identity (the first column of `status`). It gives
+	// post_claim hooks a stable TREEHOUSE_SLOT value.
+	Name string `json:"name,omitempty"`
+	// Profile names the sparse-checkout profile this acquisition selected, or
+	// empty when none was selected.
+	Profile string `json:"profile,omitempty"`
+	// Env is the profile's declared environment. It is present only when
+	// --profile named the profile explicitly; a repo default never injects
+	// environment. It is what the interactive subshell and post_claim
+	// receive, never treehouse's own Git commands.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // AcquireOptions controls optional acquisition behavior.
@@ -134,6 +155,18 @@ type AcquireOptions struct {
 	// APFSSharing opts in to tracked-file copy-on-write sharing for fresh Git
 	// slots only, before hooks and publication. Reuse and return never run it.
 	APFSSharing bool
+	// Sparse is the sparse-checkout state this acquisition enforces. Nil
+	// leaves the slot's current sparse state untouched, which is the
+	// backward-compatible default.
+	Sparse *SparseSelection
+	// Profile names the profile that produced Sparse, for logs and post_claim.
+	Profile string
+	// ProfileEnv is applied to the interactive subshell and post_claim hooks
+	// only, and only when --profile named the profile. It is never applied to
+	// treehouse's own Git commands.
+	ProfileEnv map[string]string
+	// PostClaim lists user-level post_claim hook commands.
+	PostClaim []string
 }
 
 // acquireOptions controls how Acquire reserves the worktree it hands out.
@@ -149,6 +182,10 @@ type acquireOptions struct {
 	worktreePath    string
 	includeManifest []byte
 	apfsSharing     bool
+	sparse          *SparseSelection
+	profile         string
+	profileEnv      map[string]string
+	postClaim       []string
 	// uniqueLeaf makes a newly created worktree's own directory name unique
 	// within the pool instead of the repository name every slot shares.
 	uniqueLeaf bool
@@ -180,6 +217,10 @@ func AcquireWithOptions(repoRoot, poolDir string, poolSize int, postCreate []str
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
+		sparse:          options.Sparse,
+		profile:         options.Profile,
+		profileEnv:      options.ProfileEnv,
+		postClaim:       options.PostClaim,
 		hookStdout:      os.Stdout,
 		hookStderr:      os.Stderr,
 	})
@@ -212,6 +253,10 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 		includeManifest: options.IncludeManifest,
 		apfsSharing:     options.APFSSharing,
 		uniqueLeaf:      options.UniqueLeaf,
+		sparse:          options.Sparse,
+		profile:         options.Profile,
+		profileEnv:      options.ProfileEnv,
+		postClaim:       options.PostClaim,
 		lease:           true,
 		leaseHolder:     holder,
 		hookStdout:      os.Stderr,
@@ -220,17 +265,21 @@ func AcquireLeaseInfoWithOptions(repoRoot, poolDir string, poolSize int, postCre
 }
 
 var (
-	seedWorktree       = vcs.SeedWorktree
-	removeWorktree     = vcs.RemoveWorktree
-	createBranch       = vcs.CreateBranch
-	writeState         = WriteState
-	shareWorktreeFiles = vcs.ShareWorktreeFiles
+	seedWorktree        = vcs.SeedWorktree
+	removeWorktree      = vcs.RemoveWorktree
+	createBranch        = vcs.CreateBranch
+	writeState          = WriteState
+	shareWorktreeFiles  = vcs.ShareWorktreeFiles
+	applySparseCheckout = vcs.ApplySparseCheckout
+	readSparseCheckout  = vcs.ReadSparseCheckout
 )
 
 const acquisitionIncompleteLeaseHolder = "quarantined: acquisition state incomplete"
 
 func IsQuarantinedLeaseHolder(holder string) bool {
-	return holder == RecoveredLeaseHolder || holder == acquisitionIncompleteLeaseHolder
+	return holder == RecoveredLeaseHolder ||
+		holder == acquisitionIncompleteLeaseHolder ||
+		holder == sparseCheckoutFailedLeaseHolder
 }
 
 func persistState(poolDir string, state State) error {
@@ -585,6 +634,20 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			if err := persistState(poolDir, state); err != nil {
 				return err
 			}
+			// Enforce the selected profile on this recycled slot before seeding
+			// or branch creation. A failure quarantines the slot: it must not be
+			// handed out half-configured, and hooks must not see it.
+			if err := applySparse(wt.Path, opts.sparse, opts.profile, opts.hookStderr); err != nil {
+				state.Worktrees[i].OwnerPID = 0
+				state.Worktrees[i].OwnerStartedAt = 0
+				state.Worktrees[i].Leased = true
+				state.Worktrees[i].LeaseHolder = sparseCheckoutFailedLeaseHolder
+				state.Worktrees[i].LeasedAt = time.Now()
+				if writeErr := persistState(poolDir, state); writeErr != nil {
+					return fmt.Errorf("failed to apply sparse profile %q to %s: %w (quarantine failed: %v)", opts.profile, wt.Path, err, writeErr)
+				}
+				return fmt.Errorf("failed to apply sparse profile %q to %s: %w (worktree quarantined for inspection)", opts.profile, wt.Path, err)
+			}
 			// Keep partial ignored files away from later acquisitions until a
 			// human verifies and explicitly returns the worktree.
 			seededPaths, err = seedWorktree(repoRoot, wt.Path, opts.includeManifest)
@@ -735,6 +798,18 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 			}
 			return fmt.Errorf("failed to create worktree: %w", err)
 		}
+		// Apply the profile before seeding, branch creation, APFS sharing, or
+		// publication. Failure keeps the worktree quarantined, matching the
+		// APFS failure path; no hook runs for a slot that was never usable.
+		if err := applySparse(wtPath, opts.sparse, opts.profile, opts.hookStderr); err != nil {
+			state.Worktrees[len(state.Worktrees)-1].Leased = true
+			state.Worktrees[len(state.Worktrees)-1].LeaseHolder = sparseCheckoutFailedLeaseHolder
+			state.Worktrees[len(state.Worktrees)-1].LeasedAt = time.Now()
+			if writeErr := persistState(poolDir, state); writeErr != nil {
+				return fmt.Errorf("failed to apply sparse profile %q to %s: %w (quarantine failed: %v)", opts.profile, wtPath, err, writeErr)
+			}
+			return fmt.Errorf("failed to apply sparse profile %q to %s: %w (worktree quarantined for inspection)", opts.profile, wtPath, err)
+		}
 		seededPaths, err := seedWorktree(repoRoot, wtPath, opts.includeManifest)
 		if err != nil {
 			// A failed removal leaves a real Git worktree behind. Keep it in
@@ -851,14 +926,20 @@ func acquire(repoRoot, poolDir string, poolSize int, postCreate []string, opts a
 	}
 	if runPostCreate {
 		hooks.Run(postCreate, acquired.Path, opts.hookStdout, opts.hookStderr)
+		if len(opts.postClaim) > 0 {
+			hooks.RunWithEnv(opts.postClaim, acquired.Path, opts.hookStdout, opts.hookStderr, claimHookEnv(repoRoot, opts, acquired))
+		}
 	}
 
+	acquired.Profile = opts.profile
+	acquired.Env = opts.profileEnv
 	return acquired, nil
 }
 
 func leaseInfoFromEntry(wt WorktreeEntry, baseBranch string) LeaseInfo {
 	return LeaseInfo{
 		Path:        wt.Path,
+		Name:        wt.Name,
 		LeaseID:     wt.LeaseID,
 		LeaseHolder: wt.LeaseHolder,
 		LeasedAt:    wt.LeasedAt,
@@ -1460,6 +1541,18 @@ func List(poolDir string) ([]WorktreeStatus, error) {
 			ws.Detached = detached
 			if branchErr != nil {
 				ws.BranchErr = branchErr.Error()
+			}
+			// Sparse state is derived live from the slot's git marker, never
+			// from state: a recycled slot's last profile is a hint at most.
+			if markerErr == nil && flavor == "git" {
+				sparse, err := readSparseCheckout(wt.Path)
+				if err != nil {
+					ws.SparseErr = err.Error()
+				} else {
+					ws.SparseEnabled = sparse.Enabled
+					ws.SparseCone = sparse.Cone
+					ws.SparseDirs = len(sparse.Dirs)
+				}
 			}
 			locked := false
 			if lockErr := vcs.HeadLockError(wt.Path); lockErr != nil {

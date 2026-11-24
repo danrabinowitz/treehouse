@@ -1686,6 +1686,12 @@ func (*Backend) IsHeadMergedIntoRef(worktreePath, ref string) (bool, error) {
 	return IsHeadMergedIntoRef(worktreePath, ref)
 }
 func (*Backend) IsDirty(worktreePath string) (bool, error) { return IsDirty(worktreePath) }
+func (*Backend) ReadSparseCheckout(worktreePath string) (bool, bool, bool, []string, error) {
+	return ReadSparseCheckout(worktreePath)
+}
+func (*Backend) ApplySparseCheckout(worktreePath string, dirs []string, full bool) ([]string, bool, error) {
+	return ApplySparseCheckout(worktreePath, dirs, full)
+}
 
 // UncommittedWork describes the local changes a reset would discard, or ""
 // when there are none. It uses the recovery check rather than IsDirty, because

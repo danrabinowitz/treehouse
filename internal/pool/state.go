@@ -150,7 +150,10 @@ func ReadState(poolDir string) (State, error) {
 			wt.Leased = true
 			// An interrupted acquisition has a known cause and must not be
 			// mistaken for lost state or automatically released during recovery.
-			if wt.LeaseHolder != acquisitionIncompleteLeaseHolder {
+			// A sparse-profile failure happens before seeding, so its seed
+			// inventory is unknown for the same reason and its cause is equally
+			// worth preserving.
+			if wt.LeaseHolder != acquisitionIncompleteLeaseHolder && wt.LeaseHolder != sparseCheckoutFailedLeaseHolder {
 				wt.LeaseHolder = RecoveredLeaseHolder
 			}
 			wt.SeededPaths = nil
