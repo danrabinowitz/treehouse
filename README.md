@@ -192,9 +192,10 @@ You can instead keep the pool [inside the project](#in-project-storage) with `--
 | --------- | --------- | --------------------------------- |
 | `get`     | `--lease` | Durably lease the worktree without opening a subshell; print only its path to stdout |
 | `get`     | `--lease-holder` | Optional label recorded as the lease holder (defaults to `$TREEHOUSE_LEASE_HOLDER`) |
-| `get`     | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, and `base_branch` as JSON (requires `--lease`) |
+| `get`     | `--json` | Print `path`, `lease_id`, `lease_holder`, `leased_at`, `base_branch`, `name`, `profile`, and `env` as JSON (requires `--lease`; `env` is present only when `--profile` named the profile) |
 | `get`     | `-b`, `--branch` | Create and check out a new Git branch at the acquired commit; fails if it already exists or its name is invalid |
 | `get`     | `--base` | Branch to cut this worktree from, overriding `base_branch` in config |
+| `get`     | `--profile` | Apply the named sparse-checkout profile from `treehouse.toml` (see "Sparse-checkout profiles") |
 | `get`     | `--include-file` | Replace committed `.worktreeinclude` for this acquisition with the supplied manifest |
 | `get`     | `--unique-leaf` | Name a newly created worktree directory `<repo>-<slot>` instead of `<repo>`, overriding `unique_leaf` in config |
 | `get`     | `--worktree-path` | Template for a newly created worktree's directory, overriding `worktree_path` in config |
@@ -324,7 +325,7 @@ treehouse get --lease --no-fetch --json
 
 With `--no-fetch`, Treehouse resets or creates the worktree from existing local refs and never contacts `origin`. The caller is responsible for ensuring those refs and objects are current.
 
-`treehouse status --json` returns an array with `name`, `path`, `status`, `branch`, `detached`, `branch_error`, `lock_error`, `recovery_reason`, `recovery_backup`, `flavor`, `lease_id`, `lease_holder`, `leased_at`, and `processes`. `recovery_reason` is set when an unsafe recovered lease remains quarantined. `recovery_backup` is the slot's recovery backup folder, set while that folder holds anything. `branch` names the checked-out branch of a git slot on a branch; it is empty for a detached HEAD, a jj slot, and a markerless (damaged) slot. `detached` is `true` only for a git slot on a detached HEAD (the state `treehouse get` leaves by default) and is omitted when false; `branch_error` is set when a slot's branch could not be read, so a read failure is never mistaken for a detached HEAD or an empty branch. `processes` is what `treehouse return` would terminate in that worktree, not every process whose working directory is inside it: the calling process and its ancestors are excluded, so running `status` from inside a pooled worktree reports what is resident in the slot instead of the shell you typed the command into. When the process table itself cannot be read, `status` is `unverified` and `processes` is empty: whether anything is running there is unknown, so the slot is not reported `available`, `dirty`, or `in-use`, and the error is printed as a warning on stderr. A lease, an owner reservation, or the slot you are standing in is still reported as such, because those facts do not depend on the scan. An invalid marker overrides those classifications as `damaged`. `flavor` is the backend the worktree's own marker identifies (`"git"` or `"jj"`) and is omitted when the marker is missing or cannot be verified. Non-leased entries use empty lease strings and a `null` timestamp. State files written before lease identities remain readable; their existing leases have an empty `lease_id` until released and acquired again.
+`treehouse status --json` returns an array with `name`, `path`, `status`, `branch`, `detached`, `branch_error`, `lock_error`, `recovery_reason`, `recovery_backup`, `flavor`, `sparse`, `lease_id`, `lease_holder`, `leased_at`, and `processes`. `recovery_reason` is set when an unsafe recovered lease remains quarantined. `recovery_backup` is the slot's recovery backup folder, set while that folder holds anything. `branch` names the checked-out branch of a git slot on a branch; it is empty for a detached HEAD, a jj slot, and a markerless (damaged) slot. `detached` is `true` only for a git slot on a detached HEAD (the state `treehouse get` leaves by default) and is omitted when false; `branch_error` is set when a slot's branch could not be read, so a read failure is never mistaken for a detached HEAD or an empty branch. `processes` is what `treehouse return` would terminate in that worktree, not every process whose working directory is inside it: the calling process and its ancestors are excluded, so running `status` from inside a pooled worktree reports what is resident in the slot instead of the shell you typed the command into. When the process table itself cannot be read, `status` is `unverified` and `processes` is empty: whether anything is running there is unknown, so the slot is not reported `available`, `dirty`, or `in-use`, and the error is printed as a warning on stderr. A lease, an owner reservation, or the slot you are standing in is still reported as such, because those facts do not depend on the scan. An invalid marker overrides those classifications as `damaged`. `flavor` is the backend the worktree's own marker identifies (`"git"` or `"jj"`) and is omitted when the marker is missing or cannot be verified. `sparse` is present for git slots and reports `enabled`, `cone`, `dirs`, and an optional `error`; `enabled: false` means a full checkout. Non-leased entries use empty lease strings and a `null` timestamp. State files written before lease identities remain readable; their existing leases have an empty `lease_id` until released and acquired again.
 
 Release a lease with `treehouse return <path>`, which terminates lingering processes and verifies that no foreign process remains before it resets the worktree, clears the lease, and returns the worktree to the pool.
 If process termination or that verification fails, the command exits nonzero and leaves the worktree and lease in place instead of recycling a slot that may still be in use.
@@ -554,6 +555,44 @@ The repo-level config takes precedence for repo-safe settings.
 `treehouse prune --all` can run without a repository, so it uses only the user-level config and does not read per-repo `treehouse.toml` files while sweeping.
 If no config is found, the default pool size is 16.
 
+### Sparse-checkout profiles
+
+A profile is a named, reusable sparse checkout. Profiles live in the repo-level `treehouse.toml` (or in the user-level config when the repository has none) and are inert until selected:
+
+```toml
+default = "cone"
+
+[profiles.cone]
+sparse = ["teams/insights/v2"]        # inline, repo-relative directories
+sparse_file = ".treehouse/cone.txt"   # optional: one directory per line
+sparse_mode = "cone"                  # optional; only "cone" is supported
+env = { GOFLAGS = "-mod=readonly" }
+
+[profiles.full]
+sparse = false                        # full checkout
+```
+
+Select one for an acquisition:
+
+```sh
+treehouse get --profile cone
+treehouse get --lease --profile cone --json
+```
+
+`default` names the profile `get` applies when `--profile` is absent. If neither is selected, the slot's sparse state is left untouched; repositories with no profiles behave exactly as before.
+
+- `sparse` accepts `true`, `false`, or an array of directories. Inline directories and `sparse_file` lines are unioned, trimmed, de-duplicated, and reduced to Git's minimal cone set: a parent covers its descendants. The normalized set is what Treehouse compares and what `status` reports.
+- `sparse = false`, or a profile with neither `sparse` nor `sparse_file`, is a full checkout (`git sparse-checkout disable`).
+- Only cone mode is supported. Directories are repo-relative forward-slash paths. Absolute paths, `..`, backslashes, leading `-`, and `.git`/`.jj` segments are rejected before any slot is touched.
+- `sparse_file` is read from the main checkout through rooted file access and must be a regular file inside the repository. Regenerate or validate it in CI with your own tooling; Treehouse never runs Go-specific or repository-supplied commands.
+- The profile is enforced at claim time on every acquisition. A recycled slot is expanded or contracted as needed and the switch is logged on stderr; a slot that already matches is skipped. Sparse state is never persisted in pool state, and `status` reads Git's live state.
+- A profile failure quarantines the slot for inspection and does not run `post_create` or `post_claim`.
+- `env` is applied only when `--profile` names the profile, never when a repo `default` selects it. It reaches the interactive subshell and `post_claim`, and appears as `env` in `get --lease --json`; it never reaches Treehouse's own Git commands.
+- Profiles require Git 2.36 or newer and the git backend. A jj repository refuses `--profile` with a clear error.
+- `status` appends `(sparse: cone, N dirs)` to sparse slots; `status --json` adds a `sparse` object (`enabled`, `cone`, `dirs`, optional `error`). No suffix means a full checkout.
+- Profiles are applied before `.worktreeinclude` seeding, optional branch creation, and `--apfs-sharing`, so APFS sharing sees only materialized tracked files. Seeded ignored files are unaffected by sparse patterns.
+- `max_trees` and `prune` are unchanged: a sparse slot counts as a slot, and reset and prune work on sparse worktrees.
+
 ### Base branch
 
 By default Treehouse infers the branch worktrees are cut from: `origin/HEAD`, then the checked-out branch, then `init.defaultBranch`.
@@ -749,16 +788,21 @@ During a command, treehouse warns once per repo-level `treehouse.toml` on stderr
 ```toml
 [hooks]
 post_create = ["./scripts/setup-venv.sh"]
+post_claim = ["./scripts/stamp-profile.sh"]
 pre_destroy = ["./scripts/teardown.sh"]
 ```
 
 - `post_create` runs after a worktree is provisioned or reset and right before `treehouse get` hands it to you.
   For `treehouse get --lease`, stdout from `post_create` is routed to stderr so stdout remains the leased path.
+- `post_claim` runs after `post_create` on every acquisition, including reuse, once the selected sparse profile has been applied.
+  It receives `TREEHOUSE_PROFILE`, `TREEHOUSE_SLOT`, `TREEHOUSE_LEASE_ID` (empty for a plain `get`, which holds an owner reservation), and `TREEHOUSE_REPO`, plus the profile's `env` when `--profile` named the profile explicitly.
+  It does not run for `treehouse lease <name>`, which changes state only.
 - `pre_destroy` runs before a worktree is removed by `treehouse destroy <path> --yes`, `treehouse destroy <pool> --all --yes`, or prune deletion commands such as `treehouse prune --yes` and `treehouse prune --prune-orphans --yes`.
 
 Commands in each list run sequentially in the worktree directory, via the OS shell (`/bin/sh -c` on Linux/macOS, `%COMSPEC% /c` on Windows).
 If a command exits non-zero, treehouse logs the command, exit code, and stderr, then continues with the remaining commands.
 A failing hook does not fail the overall `get`, `destroy`, or `prune` operation.
+`post_claim` failures are likewise logged and non-fatal.
 
 ## Development
 
